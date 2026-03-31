@@ -1,0 +1,33 @@
+{
+  "host": "localhost",
+  "port": "5432",
+  "user": "postgres",
+  "password": "your_admin_password",
+  "database": "myapp_prod",
+  "environment": "standalone",
+  "schemas": ["myapp", "ext"],
+  "roles": [
+    {
+      "name": "myapp_prod_dba",
+      "password": "DBAxxxxx",
+      "type": "dba",
+      "conn_limit": 10
+    },
+    {
+      "name": "myapp_prod_app",
+      "password": "APPxxxxx",
+      "type": "app",
+      "conn_limit": -1
+    },
+    {
+      "name": "myapp_prod_ro",
+      "password": "ROxxxxx",
+      "type": "ro",
+      "conn_limit": 10
+    }
+  ],
+  "extensions": ["uuid-ossp", "pg_trgm", "hstore"],
+  "grants": ["usage", "select", "insert", "update", "delete", "execute"],
+  "search_path": "myapp, ext",
+  "dry_run": false
+}

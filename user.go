@@ -1,277 +1,269 @@
 package main
 
 import (
-	_ "database/sql"
 	"fmt"
 	"strings"
 )
 
-// use a case statement to determine which functions to call for the role grants. Like what is used in the createGrants func - KL
-func createRole() {
-	// check if role already exists
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM pg_roles WHERE rolname = $1", *roleName).Scan(&count)
-	if err != nil {
-		panic(err)
-	}
-	if count > 0 {
-		fmt.Println(yellow("[*]"), "Role", *roleName, "already exists")
-	} else {
-		// create role
-		_, err = db.Exec("CREATE ROLE " + *roleName + " LOGIN PASSWORD '" + *password + "'")
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(green("[+]"), "Role", *roleName, "created")
-
-		// add grants to role
-		_, err = db.Exec("GRANT USAGE ON SCHEMA " + *schemaName + " TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		_, err = db.Exec("GRANT SELECT ON ALL SEQUENCES IN SCHEMA " + *schemaName + " TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		_, err = db.Exec("GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA " + *schemaName + " TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		//fmt.Println(green("[+]"), "Role", *roleName, "granted privileges for schema", *schemaName)
-
-		// grant privileges to user for schema
-		// ALTER DEFAULT PRIVILEGES FOR ROLE example_user IN SCHEMA public GRANT SELECT ON TABLES TO example_user;
-		_, err = db.Exec("ALTER DEFAULT PRIVILEGES FOR ROLE " + *roleName + " IN SCHEMA " + *schemaName + " GRANT SELECT ON TABLES TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		//fmt.Println(green("[+]"), "Role", *roleName, "granted privileges for schema", *schemaName)
-	}
-
-	// add user to role
-	_, err = db.Exec("GRANT " + *roleName + " TO " + *userName)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(green("[+]"), "User", *userName, "added to role", *roleName)
+// Role represents a PostgreSQL role with its configuration
+type Role struct {
+	Name       string
+	Password   string
+	Type       string // app, ro, dba
+	ConnLimit  int
 }
 
-func createUser() {
-	// check if user already exists
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM pg_user WHERE usename = $1", *userName).Scan(&count)
-	if err != nil {
-		panic(err)
+func createRoles() error {
+	roleList := parseCSV(*roles)
+	
+	for _, roleSpec := range roleList {
+		role, err := parseRoleSpec(roleSpec)
+		if err != nil {
+			return err
+		}
+		
+		if err := createSingleRole(role); err != nil {
+			return err
+		}
 	}
-	if count > 0 {
-		fmt.Println(yellow("[*]"), "User", *userName, "already exists")
-		return
-	}
-
-	// create user
-	_, err = db.Exec("CREATE USER " + *userName + " WITH PASSWORD '" + *password + "'")
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(green("[+]"), "User", *userName, "created")
+	return nil
 }
 
-func createGrants() {
-	// check if role has grants
-	var count int
-	err = db.QueryRow("select count(*) from information_schema.role_table_grants where grantee = $1 and table_schema = $2", *roleName, *schemaName).Scan(&count)
-	if err != nil {
-		panic(err)
+func parseRoleSpec(spec string) (*Role, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid role spec %s (expected format: name:password:type)", spec)
 	}
-	if count > 0 {
-		fmt.Println(yellow("[*]"), "Role", *roleName, "already has privileges for schema", *schemaName)
-		return
+	
+	role := &Role{
+		Name:      strings.TrimSpace(parts[0]),
+		Password:  strings.TrimSpace(parts[1]),
+		Type:      "app",
+		ConnLimit: -1, // unlimited
+	}
+	
+	if len(parts) >= 3 {
+		role.Type = strings.ToLower(strings.TrimSpace(parts[2]))
+	}
+	
+	// Set connection limits based on type
+	switch role.Type {
+	case "dba", "ro":
+		role.ConnLimit = 10
+	case "app":
+		role.ConnLimit = -1 // unlimited for app users
+	}
+	
+	return role, nil
+}
+
+func createSingleRole(role *Role) error {
+	// Check if role exists
+	var exists bool
+	query := "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)"
+	if err := db.QueryRow(query, role.Name).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check role %s: %w", role.Name, err)
 	}
 
-	// split grant types into array
-	grantTypes := strings.Split(*grants, ",")
+	if exists {
+		fmt.Println(yellow("→"), "Role", role.Name, "already exists")
+		return nil
+	}
 
-	// apply grants based on grant types
-	for _, grantType := range grantTypes {
-		switch grantType {
+	// Create role with LOGIN and PASSWORD
+	createQuery := fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD $1", quoteIdentifier(role.Name))
+	if role.ConnLimit >= 0 {
+		createQuery += fmt.Sprintf(" CONNECTION LIMIT %d", role.ConnLimit)
+	}
+	
+	if _, err := db.Exec(createQuery, role.Password); err != nil {
+		return fmt.Errorf("failed to create role %s: %w", role.Name, err)
+	}
+
+	fmt.Println(green("✓"), "Role", role.Name, fmt.Sprintf("(%s)", role.Type), "created")
+	return nil
+}
+
+func applyGrants() error {
+	roleList := parseCSV(*roles)
+	schemaList := parseCSV(*schemas)
+	grantList := parseCSV(*grants)
+	
+	for _, roleSpec := range roleList {
+		role, err := parseRoleSpec(roleSpec)
+		if err != nil {
+			return err
+		}
+		
+		for _, schema := range schemaList {
+			if err := applyGrantsToRole(role, schema, grantList); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func applyGrantsToRole(role *Role, schema string, grantList []string) error {
+	for _, grantType := range grantList {
+		switch strings.ToLower(strings.TrimSpace(grantType)) {
 		case "usage":
-			_, err := db.Exec("GRANT USAGE ON SCHEMA " + *schemaName + " TO " + *roleName)
-			if err != nil {
-				panic(err)
+			query := fmt.Sprintf("GRANT USAGE ON SCHEMA %s TO %s", 
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("failed to grant USAGE on schema %s to %s: %w", schema, role.Name, err)
 			}
-			fmt.Println(green("[+]"), "Role", *roleName, "granted USAGE privilege for schema", *schemaName)
+			fmt.Println(green("✓"), "Granted USAGE on schema", schema, "to", role.Name)
+			
 		case "select":
-			_, err := db.Exec("GRANT SELECT ON ALL TABLES IN SCHEMA " + *schemaName + " TO " + *roleName)
-			if err != nil {
-				panic(err)
+			query := fmt.Sprintf("GRANT SELECT ON ALL TABLES IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("failed to grant SELECT to %s: %w", role.Name, err)
 			}
-			fmt.Println(green("[+]"), "Role", *roleName, "granted SELECT privilege for all tables in schema", *schemaName)
+			
+			// Also grant SELECT on sequences
+			seqQuery := fmt.Sprintf("GRANT SELECT ON ALL SEQUENCES IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(seqQuery); err != nil {
+				return fmt.Errorf("failed to grant SELECT on sequences to %s: %w", role.Name, err)
+			}
+			fmt.Println(green("✓"), "Granted SELECT on schema", schema, "to", role.Name)
+			
 		case "insert":
-			_, err := db.Exec("GRANT INSERT ON ALL TABLES IN SCHEMA " + *schemaName + " TO " + *roleName)
-			if err != nil {
-				panic(err)
+			query := fmt.Sprintf("GRANT INSERT ON ALL TABLES IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("failed to grant INSERT to %s: %w", role.Name, err)
 			}
-			fmt.Println(green("[+]"), "Role", *roleName, "granted INSERT privilege for all tables in schema", *schemaName)
+			fmt.Println(green("✓"), "Granted INSERT on schema", schema, "to", role.Name)
+			
 		case "update":
-			_, err := db.Exec("GRANT UPDATE ON ALL TABLES IN SCHEMA " + *schemaName + " TO " + *roleName)
-			if err != nil {
-				panic(err)
+			query := fmt.Sprintf("GRANT UPDATE ON ALL TABLES IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("failed to grant UPDATE to %s: %w", role.Name, err)
 			}
-			fmt.Println(green("[+]"), "Role", *roleName, "granted UPDATE privilege for all tables in schema", *schemaName)
+			
+			// Also grant UPDATE on sequences (for nextval)
+			seqQuery := fmt.Sprintf("GRANT UPDATE, USAGE ON ALL SEQUENCES IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(seqQuery); err != nil {
+				return fmt.Errorf("failed to grant UPDATE on sequences to %s: %w", role.Name, err)
+			}
+			fmt.Println(green("✓"), "Granted UPDATE on schema", schema, "to", role.Name)
+			
 		case "delete":
-			_, err := db.Exec("GRANT DELETE ON ALL TABLES IN SCHEMA " + *schemaName + " TO " + *roleName)
-			if err != nil {
-				panic(err)
+			query := fmt.Sprintf("GRANT DELETE ON ALL TABLES IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("failed to grant DELETE to %s: %w", role.Name, err)
 			}
-			fmt.Println(green("[+]"), "Role", *roleName, "granted DELETE privilege for all tables in schema", *schemaName)
+			fmt.Println(green("✓"), "Granted DELETE on schema", schema, "to", role.Name)
+			
+		case "execute":
+			query := fmt.Sprintf("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %s TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name))
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("failed to grant EXECUTE to %s: %w", role.Name, err)
+			}
+			fmt.Println(green("✓"), "Granted EXECUTE on schema", schema, "to", role.Name)
+			
 		default:
-			fmt.Println(red("[-]"), "Invalid grant type:", grantType)
+			return fmt.Errorf("invalid grant type: %s", grantType)
 		}
 	}
+	return nil
 }
 
-// funtion to create database if not exists
-func createDatabase() {
-	// check if database already exists
-	var database string
-	err = db.QueryRow("select datname from pg_database where datname = $1", *dbName).Scan(&database)
-	if err != nil {
-		fmt.Println(yellow("[*]"), "Database", *dbName, "does not exist")
-		_, err = db.Exec("create database " + *dbName + " with owner " + *userName)
+func setSearchPaths() error {
+	roleList := parseCSV(*roles)
+	
+	for _, roleSpec := range roleList {
+		role, err := parseRoleSpec(roleSpec)
 		if err != nil {
-			panic(err)
+			return err
 		}
-		fmt.Println(green("[+]"), "Database", *dbName, "created")
-	} else {
-		fmt.Println(yellow("[*]"), "Database", *dbName, "already exists")
+		
+		if err := setRoleSearchPath(role.Name); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func grantDatabase() {
-	// create database if it does not exist
-	createDatabase()
-
-	// grant database to user
-	if !checkUserHasDatabase() {
-		_, err = db.Exec("grant connect on database " + *dbName + " to " + *userName)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(green("[+]"), "Database", *dbName, "granted to user", *userName)
+func setRoleSearchPath(roleName string) error {
+	// Set search_path for the role
+	query := fmt.Sprintf("ALTER ROLE %s SET search_path = %s",
+		quoteIdentifier(roleName), *searchPath)
+	
+	if _, err := db.Exec(query); err != nil {
+		return fmt.Errorf("failed to set search_path for %s: %w", roleName, err)
 	}
+	
+	fmt.Println(green("✓"), "Set search_path for", roleName, "to", *searchPath)
+	return nil
 }
 
-func checkUserHasDatabase() bool {
-	var user string
-	err = db.QueryRow("select datname from pg_database where datname = $1", *dbName).Scan(&user)
-	if err != nil {
-		return false
+func applyDefaultPrivileges() error {
+	roleList := parseCSV(*roles)
+	schemaList := parseCSV(*schemas)
+	
+	for _, roleSpec := range roleList {
+		role, err := parseRoleSpec(roleSpec)
+		if err != nil {
+			return err
+		}
+		
+		for _, schema := range schemaList {
+			if err := applyDefaultPrivilegesForRole(role, schema); err != nil {
+				return err
+			}
+		}
 	}
-	fmt.Println(yellow("[*]"), "User", *userName, "already has database", *dbName)
-	return true
+	return nil
 }
 
-// function to check if schema exists and if not create it
-func checkSchemaExists() bool {
-	var schema string
-	err = db.QueryRow("select schema_name from information_schema.schemata where schema_name = $1", *schemaName).Scan(&schema)
-	if err != nil {
-		// create schema
-		_, err = db.Exec("create schema " + *schemaName)
-		if err != nil {
-			panic(err)
+func applyDefaultPrivilegesForRole(role *Role, schema string) error {
+	var queries []string
+	
+	switch role.Type {
+	case "app":
+		// App roles get full CRUD on tables and sequences
+		queries = []string{
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT SELECT, UPDATE, USAGE ON SEQUENCES TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
 		}
-		fmt.Println(green("[+]"), "Schema", *schemaName, "created")
-		return false
+		
+	case "ro":
+		// Read-only roles get SELECT only
+		queries = []string{
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT SELECT ON TABLES TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT SELECT ON SEQUENCES TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
+		}
+		
+	case "dba":
+		// DBA roles get full privileges
+		queries = []string{
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON TABLES TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON SEQUENCES TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
+			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON FUNCTIONS TO %s",
+				quoteIdentifier(schema), quoteIdentifier(role.Name)),
+		}
 	}
-	fmt.Println(yellow("[*]"), "Schema", *schemaName, "already exists")
-
-	// grant privileges to user for schema
-	grantSchema()
-
-	return true
-}
-
-// function to grant privileges to user for schema
-func grantSchema() {
-	// check if user has access to schema
-	var count int
-	err = db.QueryRow("select count(*) from information_schema.role_table_grants where grantee = $1 and table_schema = $2", *userName, *schemaName).Scan(&count)
-	if err != nil {
-		panic(err)
+	
+	for _, query := range queries {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("failed to set default privileges for %s in schema %s: %w", role.Name, schema, err)
+		}
 	}
-	if count == 0 {
-		// grant privileges to user for schema
-		_, err = db.Exec("grant select on all tables in schema " + *schemaName + " to " + *userName)
-		if err != nil {
-			panic(err)
-		}
-		// grant privileges to role for schema
-		_, err := db.Exec("GRANT USAGE ON SCHEMA " + *schemaName + " TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		_, err = db.Exec("GRANT SELECT ON ALL SEQUENCES IN SCHEMA " + *schemaName + " TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		_, err = db.Exec("GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA " + *schemaName + " TO " + *roleName)
-		if err != nil {
-			panic(err)
-		}
-		//fmt.Println(green("[+]"), "Role", *roleName, "granted privileges for schema", *schemaName)
-		//fmt.Println(green("[+]"), "User", *userName, "granted privileges for schema", *schemaName)
-	} else {
-		fmt.Println(yellow("[*]"), "User", *userName, "already has privileges for schema", *schemaName)
-	}
-}
-
-func createSchema() bool {
-	// check if schema exists
-	var count int
-	err = db.QueryRow("select count(*) from information_schema.schemata where schema_name = $1", *schemaName).Scan(&count)
-	if err != nil {
-		panic(err)
-	}
-	if count == 0 {
-		// create schema
-		_, err = db.Exec("CREATE SCHEMA " + *schemaName + " AUTHORIZATION " + *userName)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(green("[+]"), "Schema", *schemaName, "created")
-
-		// set owner of schema to user
-		_, err = db.Exec("ALTER SCHEMA " + *schemaName + " OWNER TO " + *userName)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(green("[+]"), "Schema", *schemaName, "owner set to", *userName)
-
-		// grant privileges to user for schema
-		grantSchema()
-
-		return true
-	}
-
-	// set owner of schema to user if not already set
-	var owner string
-	err = db.QueryRow("SELECT schema_owner FROM information_schema.schemata WHERE schema_name = $1", *schemaName).Scan(&owner)
-	if err != nil {
-		panic(err)
-	}
-	if owner != *userName {
-		_, err = db.Exec("ALTER SCHEMA " + *schemaName + " OWNER TO " + *userName)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(green("[+]"), "Schema", *schemaName, "owner set to", *userName)
-	}
-
-	//fmt.Println(yellow("[*]"), "Schema", *schemaName, "already exists")
-
-	// grant privileges to user for schema
-	grantSchema()
-
-	return false
+	
+	fmt.Println(green("✓"), "Default privileges set for", role.Name, fmt.Sprintf("(%s)", role.Type), "in schema", schema)
+	return nil
 }
