@@ -1,1 +1,39 @@
+# Text files
 *.txt
+
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go build
+pg-create
+
+# Go workspace
+go.work
+
+# Config files with secrets
+config.yaml
+config.json
+*.local.yaml
+*.local.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials
+.pgpass
+.env
