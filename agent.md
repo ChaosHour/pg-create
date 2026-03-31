@@ -87,6 +87,7 @@ I need you to evalute the methods used. I don't just want to create 2 useres and
 - Create a Makefile to build the binary and put it in ./bin/pg-create for easy execution.
 - Update the READEME.md with usage instructions, examples, and any necessary environment variable configurations.
 - When possible, I like to use the ~/.pgpass file or even a json file for storing database credentials securely, and the CLI should support reading from these files for authentication.
+- No emojis in the code or documentation, please.
 
 ## Notes
 

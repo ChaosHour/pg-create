@@ -4,13 +4,13 @@ PostgreSQL Resource Provisioning CLI - A safe, idempotent tool for creating and 
 
 ## Features
 
-- ✅ **Idempotent Operations** - Safe to run multiple times
-- ✅ **Flexible Configuration** - Use CLI flags or YAML/JSON config files
-- ✅ **Dry Run Mode** - Preview changes before applying
-- ✅ **Environment Safeguards** - Confirmation prompts for prod/qa
-- ✅ **Role-based Privileges** - Automatic privilege templates (app, ro, dba)
-- ✅ **Security** - Parameterized queries, no SQL injection
-- ✅ **Clear Output** - Visual indicators for created vs existing resources
+- **Idempotent Operations** - Safe to run multiple times
+- **Flexible Configuration** - Use CLI flags or YAML/JSON config files
+- **Dry Run Mode** - Preview changes before applying
+- **Environment Safeguards** - Confirmation prompts for prod/qa
+- **Role-based Privileges** - Automatic privilege templates (app, ro, dba)
+- **Security** - Parameterized queries, no SQL injection
+- **Clear Output** - Visual indicators for created vs existing resources
 
 ## Installation
 

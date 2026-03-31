@@ -1,6 +1,6 @@
 # pg-create Project Refactoring Summary
 
-## ✅ Completed Tasks
+## Completed Tasks
 
 ### 1. Project Structure Reorganization
 Following Go best practices and agent.md specifications:
@@ -21,51 +21,51 @@ pg-create/
 
 ### 2. Features Implemented
 
-✅ **Security Fixes**
+**Security Fixes**
 - Removed ALL SQL injection vulnerabilities
 - Parameterized queries throughout
 - Proper identifier quoting
 
-✅ **Configuration System**
+**Configuration System**
 - YAML support via `gopkg.in/yaml.v3`
 - JSON support (native encoding/json)
 - CLI flags as alternative
 - Example configs provided
 
-✅ **Dry Run Mode**
+**Dry Run Mode**
 - `--dry-run` flag shows planned changes
 - No actual database modifications
 - Clear visual indicators
 
-✅ **Environment Safeguards**
+**Environment Safeguards**
 - `--env` flag (standalone/qa/prod)
 - Confirmation prompts for prod/qa
 - Default: standalone (safe)
 
-✅ **Extensions Support**
+**Extensions Support**
 - `-e` flag for comma-separated extensions
 - Install into first schema by default
 - Idempotent with IF NOT EXISTS
 
-✅ **Multiple Roles & Schemas**
+**Multiple Roles & Schemas**
 - Comma-separated support
 - Role format: `name:password:type`
 - Types: app, ro, dba
 - Automatic connection limits
 
-✅ **Search Path Management**
+**Search Path Management**
 - `ALTER ROLE SET search_path`
 - Applied to all provisioned roles
 - Configurable via flag or config
 
-✅ **Default Privileges**
+**Default Privileges**
 - Automatic based on role type:
   - **app**: SELECT, INSERT, UPDATE, DELETE + sequences
   - **ro**: SELECT only
   - **dba**: ALL privileges
 - Future table/sequence grants included
 
-✅ **Proper Execution Order**
+**Proper Execution Order**
 1. Create database
 2. Create roles (with passwords, limits)
 3. Create schemas
@@ -74,13 +74,13 @@ pg-create/
 6. Set search paths
 7. Apply default privileges
 
-✅ **Build System**
+**Build System**
 - Makefile with common targets
 - Builds to `./bin/pg-create`
 - Clean, install, test targets
 - Dependency management
 
-✅ **Documentation**
+**Documentation**
 - Complete README with examples
 - Usage instructions
 - Configuration reference
@@ -101,10 +101,10 @@ pg-create/
 - No global state (except colors)
 
 **Visual Output**
-- ✓ Created resources (green)
-- → Existing resources (yellow)
-- ℹ Dry run info (blue)
-- ✗ Errors (red)
+- Created resources (green checkmark)
+- Existing resources (yellow arrow)
+- Dry run info (blue info icon)
+- Errors (red X)
 
 ### 4. Testing Capabilities
 
@@ -120,7 +120,7 @@ The CLI now supports:
 ./bin/pg-create -c config.yaml -env prod
 ```
 
-## 🔄 Migration from Old Code
+## Migration from Old Code
 
 Old files (`main.go`, `db.go`, `user.go`) are now obsolete but kept for reference. They're added to `.gitignore`.
 
@@ -141,7 +141,7 @@ Old files (`main.go`, `db.go`, `user.go`) are now obsolete but kept for referenc
 - Extensions support
 - Environment safeguards
 
-## 📋 Usage Examples
+## Usage Examples
 
 ### Quick Start
 ```bash
@@ -193,7 +193,7 @@ roles:
   -env standalone
 ```
 
-## 🚀 Next Steps (Optional Enhancements)
+## Next Steps (Optional Enhancements)
 
 1. **Rollback Mechanism** - Track changes for reversal
 2. **Schema Ownership** - Explicit owner assignment
@@ -204,22 +204,22 @@ roles:
 7. **.pgpass Support** - Read credentials from file
 8. **Version Command** - Show CLI version
 
-## ✅ Requirements Met
+## Requirements Met
 
 All agent.md requirements satisfied:
-- ✅ cmd/pgcreate/main.go structure
-- ✅ pkg/ for modules
-- ✅ Makefile to build to ./bin/pg-create
-- ✅ Color package for terminal output
-- ✅ Configuration file support (YAML/JSON)
-- ✅ Dry-run mode
-- ✅ Comprehensive error handling
-- ✅ Updated README.md
-- ✅ Production safeguards
-- ✅ Idempotent operations
-- ✅ Clear feedback (existing vs created)
+- cmd/pgcreate/main.go structure
+- pkg/ for modules
+- Makefile to build to ./bin/pg-create
+- Color package for terminal output
+- Configuration file support (YAML/JSON)
+- Dry-run mode
+- Comprehensive error handling
+- Updated README.md
+- Production safeguards
+- Idempotent operations
+- Clear feedback (existing vs created)
 
-## 🎯 Summary
+## Summary
 
 The refactoring transforms pg-create from a basic script into a production-ready CLI tool with:
 - Professional project structure
@@ -228,4 +228,4 @@ The refactoring transforms pg-create from a basic script into a production-ready
 - Safety features for production use
 - Complete documentation
 
-**The CLI is now ready for production deployment! 🎉**
+The CLI is now ready for production deployment.

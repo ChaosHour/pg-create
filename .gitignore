@@ -37,8 +37,3 @@ Thumbs.db
 # Credentials
 .pgpass
 .env
-
-# Old code
-main.go
-db.go
-user.go
