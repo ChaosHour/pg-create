@@ -133,6 +133,40 @@ func parseRoleSpec(spec string) (*Role, error) {
 	return role, nil
 }
 
+// LookupPgPass reads ~/.pgpass and returns the password matching the given connection parameters.
+// File format per line: hostname:port:database:username:password
+func LookupPgPass(host, port, database, user string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".pgpass"))
+	if err != nil {
+		return ""
+	}
+
+	match := func(pattern, value string) bool {
+		return pattern == "*" || pattern == value
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Split into exactly 5 parts; password may contain colons
+		parts := strings.SplitN(line, ":", 5)
+		if len(parts) != 5 {
+			continue
+		}
+		if match(parts[0], host) && match(parts[1], port) && match(parts[2], database) && match(parts[3], user) {
+			return parts[4]
+		}
+	}
+	return ""
+}
+
 func parseCSV(input string) []string {
 	if input == "" {
 		return []string{}

@@ -42,6 +42,7 @@ func NewProvisioner(db *sql.DB, cfg *config.Config) *Provisioner {
 }
 
 func (p *Provisioner) Provision() error {
+	// Phase 1: global operations that must run against the maintenance DB (pg_database, pg_roles are cluster-wide).
 	if err := p.createDatabase(); err != nil {
 		return fmt.Errorf("database creation failed: %w", err)
 	}
@@ -50,6 +51,24 @@ func (p *Provisioner) Provision() error {
 		if err := p.createRoles(); err != nil {
 			return fmt.Errorf("role creation failed: %w", err)
 		}
+		if err := p.grantConnect(); err != nil {
+			return fmt.Errorf("grant connect failed: %w", err)
+		}
+	}
+
+	// Phase 2: switch to the target database so that schema checks, grants, and
+	// default privileges all operate in the correct database context.
+	targetDB, err := Connect(p.cfg.Host, p.cfg.Port, p.cfg.User, p.cfg.Password, p.cfg.Database)
+	if err != nil {
+		if p.cfg.DryRun {
+			fmt.Println(blue("i"), "[DRY RUN] Target database not yet available; remaining steps shown for reference only")
+		} else {
+			return fmt.Errorf("failed to connect to database %s: %w", p.cfg.Database, err)
+		}
+	} else {
+		defer targetDB.Close()
+		p.db = targetDB
+		fmt.Println(green("✓"), "Switched connection to database", p.cfg.Database)
 	}
 
 	if len(p.cfg.Schemas) > 0 {
@@ -64,7 +83,9 @@ func (p *Provisioner) Provision() error {
 		}
 	}
 
-	if len(p.cfg.Grants) > 0 && len(p.cfg.Roles) > 0 && len(p.cfg.Schemas) > 0 {
+	// Always apply grants and privileges when roles + schemas are present,
+	// regardless of whether the database or schema already existed.
+	if len(p.cfg.Roles) > 0 && len(p.cfg.Schemas) > 0 {
 		if err := p.applyGrants(); err != nil {
 			return fmt.Errorf("grant application failed: %w", err)
 		}
@@ -219,16 +240,34 @@ func (p *Provisioner) createSingleRole(role config.Role) error {
 		return nil
 	}
 
-	createQuery := fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD $1", quoteIdentifier(role.Name))
+	// DDL statements don't support parameterized queries; escape single quotes manually
+	escapedPassword := strings.ReplaceAll(role.Password, "'", "''")
+	createQuery := fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", quoteIdentifier(role.Name), escapedPassword)
 	if role.ConnLimit >= 0 {
 		createQuery += fmt.Sprintf(" CONNECTION LIMIT %d", role.ConnLimit)
 	}
 
-	if _, err := p.db.Exec(createQuery, role.Password); err != nil {
+	if _, err := p.db.Exec(createQuery); err != nil {
 		return fmt.Errorf("failed to create role %s: %w", role.Name, err)
 	}
 
 	fmt.Println(green("✓"), "Role", role.Name, fmt.Sprintf("(%s)", role.Type), "created")
+	return nil
+}
+
+func (p *Provisioner) grantConnect() error {
+	for _, role := range p.cfg.Roles {
+		if p.cfg.DryRun {
+			fmt.Println(blue("i"), "[DRY RUN] Would grant CONNECT on database", p.cfg.Database, "to", role.Name)
+			continue
+		}
+		query := fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s",
+			quoteIdentifier(p.cfg.Database), quoteIdentifier(role.Name))
+		if _, err := p.db.Exec(query); err != nil {
+			return fmt.Errorf("failed to grant CONNECT to %s: %w", role.Name, err)
+		}
+		fmt.Println(green("✓"), "Granted CONNECT on database", p.cfg.Database, "to", role.Name)
+	}
 	return nil
 }
 
