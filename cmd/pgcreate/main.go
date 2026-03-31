@@ -58,13 +58,23 @@ func main() {
 		}
 	} else {
 		// Build config from flags
-		if *host == "" || *userName == "" || *password == "" || *dbName == "" {
-			fmt.Println(red("✗"), "Missing required flags: -s (host), -u (user), -p (password), -d (database)")
+		if *host == "" || *userName == "" || *dbName == "" {
+			fmt.Println(red("✗"), "Missing required flags: -s (host), -u (user), -d (database)")
 			printUsage()
 			os.Exit(1)
 		}
-		
-		cfg = config.FromFlags(*host, *port, *userName, *password, *dbName, 
+
+		passwd := *password
+		if passwd == "" {
+			passwd = config.LookupPgPass(*host, *port, "postgres", *userName)
+			if passwd == "" {
+				fmt.Println(red("✗"), "No password provided: use -p flag or add a matching entry to ~/.pgpass")
+				os.Exit(1)
+			}
+			fmt.Println(green("✓"), "Using credentials from ~/.pgpass")
+		}
+
+		cfg = config.FromFlags(*host, *port, *userName, passwd, *dbName,
 			*schemas, *roles, *extensions, *grants, *searchPath, *envType)
 	}
 
