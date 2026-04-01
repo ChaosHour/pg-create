@@ -1,9 +1,11 @@
-.PHONY: build clean install test help
+.PHONY: build build-validate build-all clean install test help run
 
 # Variables
 BINARY_NAME=pg-create
+VALIDATE_BINARY_NAME=pg-validate
 BUILD_DIR=./bin
 CMD_DIR=./cmd/pgcreate
+VALIDATE_CMD_DIR=./cmd/pgvalidate
 GO=go
 GOFLAGS=-v
 
@@ -13,6 +15,17 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)
 	@echo "✓ Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
+
+# Build validation CLI
+build-validate:
+	@echo "Building $(VALIDATE_BINARY_NAME)..."
+	@mkdir -p $(BUILD_DIR)
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(VALIDATE_BINARY_NAME) $(VALIDATE_CMD_DIR)
+	@echo "✓ Binary built: $(BUILD_DIR)/$(VALIDATE_BINARY_NAME)"
+
+# Build both CLIs
+build-all: build build-validate
+	@echo "✓ Built both $(BINARY_NAME) and $(VALIDATE_BINARY_NAME)"
 
 # Clean build artifacts
 clean:
@@ -46,6 +59,8 @@ run: build
 help:
 	@echo "Available targets:"
 	@echo "  build    - Build the binary to ./bin/$(BINARY_NAME)"
+	@echo "  build-validate - Build the validator binary to ./bin/$(VALIDATE_BINARY_NAME)"
+	@echo "  build-all - Build both CLIs"
 	@echo "  clean    - Remove build artifacts"
 	@echo "  deps     - Download and tidy dependencies"
 	@echo "  test     - Run tests"

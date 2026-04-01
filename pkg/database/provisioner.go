@@ -372,8 +372,13 @@ func (p *Provisioner) setRoleSearchPath(roleName string) error {
 		return nil
 	}
 
+	formattedSearchPath, err := formatSearchPath(p.cfg.SearchPath)
+	if err != nil {
+		return fmt.Errorf("invalid search_path %q: %w", p.cfg.SearchPath, err)
+	}
+
 	query := fmt.Sprintf("ALTER ROLE %s SET search_path = %s",
-		quoteIdentifier(roleName), p.cfg.SearchPath)
+		quoteIdentifier(roleName), formattedSearchPath)
 
 	if _, err := p.db.Exec(query); err != nil {
 		return fmt.Errorf("failed to set search_path for %s: %w", roleName, err)
@@ -423,6 +428,9 @@ func (p *Provisioner) applyDefaultPrivilegesForRole(role config.Role, schema str
 			fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON FUNCTIONS TO %s",
 				quoteIdentifier(schema), quoteIdentifier(role.Name)),
 		}
+
+	default:
+		return fmt.Errorf("unsupported role type %q for role %q", role.Type, role.Name)
 	}
 
 	if p.cfg.DryRun {
@@ -442,4 +450,29 @@ func (p *Provisioner) applyDefaultPrivilegesForRole(role config.Role, schema str
 
 func quoteIdentifier(name string) string {
 	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(name, `"`, `""`))
+}
+
+func formatSearchPath(input string) (string, error) {
+	parts := strings.Split(input, ",")
+	formatted := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+
+		if item == "$user" {
+			formatted = append(formatted, `"$user"`)
+			continue
+		}
+
+		formatted = append(formatted, quoteIdentifier(item))
+	}
+
+	if len(formatted) == 0 {
+		return "", fmt.Errorf("must contain at least one schema")
+	}
+
+	return strings.Join(formatted, ", "), nil
 }

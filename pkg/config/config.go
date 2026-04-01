@@ -32,6 +32,27 @@ type Role struct {
 	ConnLimit int    `yaml:"conn_limit" json:"conn_limit"`
 }
 
+var validRoleTypes = map[string]struct{}{
+	"app": {},
+	"ro":  {},
+	"dba": {},
+}
+
+var validGrantTypes = map[string]struct{}{
+	"usage":   {},
+	"select":  {},
+	"insert":  {},
+	"update":  {},
+	"delete":  {},
+	"execute": {},
+}
+
+var validEnvironments = map[string]struct{}{
+	"standalone": {},
+	"qa":         {},
+	"prod":       {},
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -60,12 +81,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Environment == "" {
 		cfg.Environment = "standalone"
+	} else {
+		cfg.Environment = strings.ToLower(strings.TrimSpace(cfg.Environment))
 	}
 
 	// Set role defaults
 	for i := range cfg.Roles {
+		cfg.Roles[i].Name = strings.TrimSpace(cfg.Roles[i].Name)
+		cfg.Roles[i].Password = strings.TrimSpace(cfg.Roles[i].Password)
 		if cfg.Roles[i].Type == "" {
 			cfg.Roles[i].Type = "app"
+		} else {
+			cfg.Roles[i].Type = strings.ToLower(strings.TrimSpace(cfg.Roles[i].Type))
 		}
 		if cfg.Roles[i].ConnLimit == 0 {
 			switch cfg.Roles[i].Type {
@@ -77,10 +104,14 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 
-func FromFlags(host, port, user, password, database, schemas, roles, extensions, grants, searchPath, environment string) *Config {
+func FromFlags(host, port, user, password, database, schemas, roles, extensions, grants, searchPath, environment string) (*Config, error) {
 	cfg := &Config{
 		Host:        host,
 		Port:        port,
@@ -91,19 +122,25 @@ func FromFlags(host, port, user, password, database, schemas, roles, extensions,
 		Extensions:  parseCSV(extensions),
 		Grants:      parseCSV(grants),
 		SearchPath:  searchPath,
-		Environment: environment,
+		Environment: strings.ToLower(strings.TrimSpace(environment)),
 	}
 
 	// Parse roles
 	roleSpecs := parseCSV(roles)
 	cfg.Roles = make([]Role, 0, len(roleSpecs))
 	for _, spec := range roleSpecs {
-		if role, err := parseRoleSpec(spec); err == nil {
-			cfg.Roles = append(cfg.Roles, *role)
+		role, err := parseRoleSpec(spec)
+		if err != nil {
+			return nil, err
 		}
+		cfg.Roles = append(cfg.Roles, *role)
 	}
 
-	return cfg
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
 }
 
 func parseRoleSpec(spec string) (*Role, error) {
@@ -123,6 +160,10 @@ func parseRoleSpec(spec string) (*Role, error) {
 		role.Type = strings.ToLower(strings.TrimSpace(parts[2]))
 	}
 
+	if _, ok := validRoleTypes[role.Type]; !ok {
+		return nil, fmt.Errorf("invalid role type %q for role %q (must be app, ro, or dba)", role.Type, role.Name)
+	}
+
 	switch role.Type {
 	case "dba", "ro":
 		role.ConnLimit = 10
@@ -131,6 +172,57 @@ func parseRoleSpec(spec string) (*Role, error) {
 	}
 
 	return role, nil
+}
+
+func (c *Config) Validate() error {
+	if strings.TrimSpace(c.Host) == "" {
+		return fmt.Errorf("host is required")
+	}
+	if strings.TrimSpace(c.User) == "" {
+		return fmt.Errorf("user is required")
+	}
+	if strings.TrimSpace(c.Database) == "" {
+		return fmt.Errorf("database is required")
+	}
+
+	if c.Port == "" {
+		c.Port = "5432"
+	}
+
+	if c.Environment == "" {
+		c.Environment = "standalone"
+	}
+	if _, ok := validEnvironments[c.Environment]; !ok {
+		return fmt.Errorf("invalid environment %q (must be standalone, qa, or prod)", c.Environment)
+	}
+
+	for i := range c.Roles {
+		role := &c.Roles[i]
+		if role.Name == "" {
+			return fmt.Errorf("role name cannot be empty")
+		}
+		if role.Password == "" {
+			return fmt.Errorf("password cannot be empty for role %q", role.Name)
+		}
+		if role.Type == "" {
+			role.Type = "app"
+		}
+		if _, ok := validRoleTypes[role.Type]; !ok {
+			return fmt.Errorf("invalid role type %q for role %q (must be app, ro, or dba)", role.Type, role.Name)
+		}
+	}
+
+	for _, grant := range c.Grants {
+		normalized := strings.ToLower(strings.TrimSpace(grant))
+		if normalized == "" {
+			continue
+		}
+		if _, ok := validGrantTypes[normalized]; !ok {
+			return fmt.Errorf("invalid grant type %q", grant)
+		}
+	}
+
+	return nil
 }
 
 // LookupPgPass reads ~/.pgpass and returns the password matching the given connection parameters.
