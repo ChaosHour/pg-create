@@ -6,7 +6,15 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/lib/pq"
+)
+
+var (
+	heading = color.New(color.FgCyan, color.Bold).SprintFunc()
+	status  = color.New(color.FgGreen).SprintFunc()
+	warn    = color.New(color.FgYellow).SprintFunc()
+	fail    = color.New(color.FgRed).SprintFunc()
 )
 
 type Options struct {
@@ -92,6 +100,22 @@ type ownedObjects struct {
 	OwnedFunctions int
 }
 
+type objectGrant struct {
+	RoleName   string
+	SchemaName string
+	ObjectType string
+	ObjectName string
+	Privilege  string
+	Grantable  bool
+}
+
+type ownedObjectDetail struct {
+	RoleName   string
+	SchemaName string
+	ObjectType string
+	ObjectName string
+}
+
 func Run(db *sql.DB, opts Options) error {
 	roles := normalizeRoles(opts.Roles)
 	if len(roles) == 0 {
@@ -137,6 +161,16 @@ func Run(db *sql.DB, opts Options) error {
 		return err
 	}
 
+	objectGrants, err := fetchObjectGrants(db, roles)
+	if err != nil {
+		return err
+	}
+
+	ownedDetails, err := fetchOwnedObjectDetails(db, roles)
+	if err != nil {
+		return err
+	}
+
 	printHeader(roles, schema)
 	printRoleOverview(overview)
 	printMemberships(memberships)
@@ -147,6 +181,8 @@ func Run(db *sql.DB, opts Options) error {
 	printFunctionSummary(functions)
 	printDefaultPrivileges(defaults)
 	printOwnedObjects(owned)
+	printObjectGrants(objectGrants)
+	printOwnedObjectDetails(ownedDetails)
 
 	return nil
 }
@@ -488,21 +524,150 @@ ORDER BY input.role_name`
 	return result, rows.Err()
 }
 
-func printHeader(roles []string, schema string) {
-	fmt.Println("====================================================")
-	fmt.Println("pg-validate: Role and Grant Validation Report")
-	fmt.Println("====================================================")
-	fmt.Println("Roles:", strings.Join(roles, ", "))
-	if schema == "" {
-		fmt.Println("Schema filter: <all non-system schemas>")
+func hasInformationSchemaTable(db *sql.DB, tableName string) (bool, error) {
+	const q = `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='information_schema' AND table_name=$1)`
+	var exists bool
+	if err := db.QueryRow(q, tableName).Scan(&exists); err != nil {
+		return false, fmt.Errorf("failed querying information_schema for %s: %w", tableName, err)
+	}
+	return exists, nil
+}
+
+func fetchObjectGrants(db *sql.DB, roles []string) ([]objectGrant, error) {
+	hasSeq, err := hasInformationSchemaTable(db, "sequence_privileges")
+	if err != nil {
+		return nil, err
+	}
+	hasRoutine, err := hasInformationSchemaTable(db, "routine_privileges")
+	if err != nil {
+		return nil, err
+	}
+
+	queries := []string{`
+SELECT grantee::text AS role_name, table_schema AS schema_name, 'table' AS object_type, table_name AS object_name,
+       privilege_type AS privilege, is_grantable::bool AS is_grantable
+FROM information_schema.table_privileges
+WHERE grantee = ANY($1)
+  AND table_schema NOT LIKE 'pg_%'
+  AND table_schema <> 'information_schema'`}
+
+	if hasSeq {
+		queries = append(queries, `
+SELECT grantee::text AS role_name, sequence_schema AS schema_name, 'sequence' AS object_type, sequence_name AS object_name,
+       privilege_type AS privilege, is_grantable::bool AS is_grantable
+FROM information_schema.sequence_privileges
+WHERE grantee = ANY($1)
+  AND sequence_schema NOT LIKE 'pg_%'
+  AND sequence_schema <> 'information_schema'`)
 	} else {
-		fmt.Println("Schema filter:", schema)
+		fmt.Println("warn: information_schema.sequence_privileges not found; skipping sequence privileges report")
+	}
+
+	if hasRoutine {
+		queries = append(queries, `
+SELECT grantee::text AS role_name, routine_schema AS schema_name, 'function' AS object_type, routine_name AS object_name,
+       privilege_type AS privilege, is_grantable::bool AS is_grantable
+FROM information_schema.routine_privileges
+WHERE grantee = ANY($1)
+  AND routine_schema NOT LIKE 'pg_%'
+  AND routine_schema <> 'information_schema'`)
+	} else {
+		fmt.Println("warn: information_schema.routine_privileges not found; skipping function privileges report")
+	}
+
+	q := strings.Join(queries, "\nUNION ALL\n") + `
+ORDER BY role_name, schema_name, object_type, object_name, privilege`
+
+	rows, err := db.Query(q, pq.Array(roles))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch object grants: %w", err)
+	}
+	defer rows.Close()
+
+	var result []objectGrant
+	for rows.Next() {
+		var g objectGrant
+		if err := rows.Scan(&g.RoleName, &g.SchemaName, &g.ObjectType, &g.ObjectName, &g.Privilege, &g.Grantable); err != nil {
+			return nil, fmt.Errorf("failed scanning object grants: %w", err)
+		}
+		result = append(result, g)
+	}
+	return result, rows.Err()
+}
+
+func fetchOwnedObjectDetails(db *sql.DB, roles []string) ([]ownedObjectDetail, error) {
+	const q = `
+SELECT owner.role_name,
+       obj.schema_name,
+       obj.object_type,
+       obj.object_name
+FROM (
+    SELECT r.rolname AS owner_name,
+           n.nspname AS schema_name,
+           CASE c.relkind
+               WHEN 'r' THEN 'table'
+               WHEN 'v' THEN 'view'
+               WHEN 'm' THEN 'materialized_view'
+               WHEN 'f' THEN 'foreign_table'
+               WHEN 'S' THEN 'sequence'
+               ELSE 'other'
+           END AS object_type,
+           c.relname AS object_name
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_roles r ON r.oid = c.relowner
+    WHERE n.nspname NOT LIKE 'pg_%'
+      AND n.nspname <> 'information_schema'
+    UNION ALL
+    SELECT r.rolname AS owner_name,
+           n.nspname AS schema_name,
+           'function' AS object_type,
+           p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS object_name
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_roles r ON r.oid = p.proowner
+    WHERE n.nspname NOT LIKE 'pg_%'
+      AND n.nspname <> 'information_schema'
+) obj
+JOIN LATERAL (SELECT obj.owner_name AS role_name) owner ON obj.owner_name = owner.role_name
+WHERE obj.owner_name = ANY($1)
+ORDER BY obj.owner_name, obj.schema_name, obj.object_type, obj.object_name`
+
+	rows, err := db.Query(q, pq.Array(roles))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch owned object details: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ownedObjectDetail
+	for rows.Next() {
+		var d ownedObjectDetail
+		if err := rows.Scan(&d.RoleName, &d.SchemaName, &d.ObjectType, &d.ObjectName); err != nil {
+			return nil, fmt.Errorf("failed scanning owned object details: %w", err)
+		}
+		result = append(result, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func printHeader(roles []string, schema string) {
+	fmt.Println(heading("===================================================="))
+	fmt.Println(heading("pg-validate: Role and Grant Validation Report"))
+	fmt.Println(heading("===================================================="))
+	fmt.Printf("%s %s\n", status("Roles:"), strings.Join(roles, ", "))
+	if schema == "" {
+		fmt.Printf("%s %s\n", status("Schema filter:"), warn("<all non-system schemas>"))
+	} else {
+		fmt.Printf("%s %s\n", status("Schema filter:"), warn(schema))
 	}
 	fmt.Println()
 }
 
 func printRoleOverview(rows []roleOverview) {
-	fmt.Println("[1] Role Overview")
+	fmt.Println(heading("[1] Role Overview"))
 	for _, r := range rows {
 		if !r.RoleExists {
 			fmt.Printf("- %s: NOT FOUND\n", r.RequestedRole)
@@ -523,7 +688,7 @@ func printRoleOverview(rows []roleOverview) {
 }
 
 func printMemberships(rows []membership) {
-	fmt.Println("[2] Role Memberships")
+	fmt.Println(heading("[2] Role Memberships"))
 	for _, r := range rows {
 		if len(r.Members) == 0 {
 			fmt.Printf("- %s: member_of=<none>\n", r.RoleName)
@@ -535,7 +700,7 @@ func printMemberships(rows []membership) {
 }
 
 func printDatabasePrivileges(rows []dbPrivilege) {
-	fmt.Println("[3] Database Privileges (current database)")
+	fmt.Println(heading("[3] Database Privileges (current database)"))
 	for _, r := range rows {
 		fmt.Printf("- %s: CONNECT=%v CREATE=%v TEMP=%v\n", r.RoleName, r.CanConnect, r.CanCreate, r.CanTemp)
 	}
@@ -543,7 +708,7 @@ func printDatabasePrivileges(rows []dbPrivilege) {
 }
 
 func printSchemaPrivileges(rows []schemaPrivilege) {
-	fmt.Println("[4] Schema Privileges")
+	fmt.Println(heading("[4] Schema Privileges"))
 	if len(rows) == 0 {
 		fmt.Println("- No schemas matched the filter")
 		fmt.Println()
@@ -556,7 +721,7 @@ func printSchemaPrivileges(rows []schemaPrivilege) {
 }
 
 func printTableSummary(rows []tableSummary) {
-	fmt.Println("[5] Table Privilege Summary")
+	fmt.Println(heading("[5] Table Privilege Summary"))
 	if len(rows) == 0 {
 		fmt.Println("- No tables found in target schemas")
 		fmt.Println()
@@ -570,7 +735,7 @@ func printTableSummary(rows []tableSummary) {
 }
 
 func printSequenceSummary(rows []sequenceSummary) {
-	fmt.Println("[6] Sequence Privilege Summary")
+	fmt.Println(heading("[6] Sequence Privilege Summary"))
 	if len(rows) == 0 {
 		fmt.Println("- No sequences found in target schemas")
 		fmt.Println()
@@ -583,7 +748,7 @@ func printSequenceSummary(rows []sequenceSummary) {
 }
 
 func printFunctionSummary(rows []functionSummary) {
-	fmt.Println("[7] Function Privilege Summary")
+	fmt.Println(heading("[7] Function Privilege Summary"))
 	if len(rows) == 0 {
 		fmt.Println("- No functions found in target schemas")
 		fmt.Println()
@@ -596,7 +761,7 @@ func printFunctionSummary(rows []functionSummary) {
 }
 
 func printDefaultPrivileges(rows []defaultPrivilege) {
-	fmt.Println("[8] Default Privileges")
+	fmt.Println(heading("[8] Default Privileges"))
 	if len(rows) == 0 {
 		fmt.Println("- No default privileges found for target roles")
 		fmt.Println()
@@ -610,9 +775,39 @@ func printDefaultPrivileges(rows []defaultPrivilege) {
 }
 
 func printOwnedObjects(rows []ownedObjects) {
-	fmt.Println("[9] Owned Objects")
+	fmt.Println(heading("[9] Owned Objects"))
 	for _, r := range rows {
 		fmt.Printf("- %s: tables=%d sequences=%d views=%d functions=%d\n", r.RoleName, r.OwnedTables, r.OwnedSequences, r.OwnedViews, r.OwnedFunctions)
+	}
+	fmt.Println()
+}
+
+func printObjectGrants(rows []objectGrant) {
+	fmt.Println(heading("[10] Object Grants"))
+	if len(rows) == 0 {
+		fmt.Println("- No explicit object grants found for target roles")
+		fmt.Println()
+		return
+	}
+	for _, r := range rows {
+		grantable := "NO"
+		if r.Grantable {
+			grantable = "YES"
+		}
+		fmt.Printf("- %s on %s.%s (%s): %s grantable=%s\n", r.RoleName, r.SchemaName, r.ObjectName, r.ObjectType, r.Privilege, grantable)
+	}
+	fmt.Println()
+}
+
+func printOwnedObjectDetails(rows []ownedObjectDetail) {
+	fmt.Println(heading("[11] Owned Object Details"))
+	if len(rows) == 0 {
+		fmt.Println("- No owned objects found for target roles")
+		fmt.Println()
+		return
+	}
+	for _, r := range rows {
+		fmt.Printf("- %s owns %s.%s (%s)\n", r.RoleName, r.SchemaName, r.ObjectName, r.ObjectType)
 	}
 	fmt.Println()
 }
