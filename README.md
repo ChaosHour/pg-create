@@ -9,7 +9,7 @@ PostgreSQL Resource Provisioning CLI - A safe, idempotent tool for creating and 
 - **Dry Run Mode** - Preview changes before applying
 - **Environment Safeguards** - Confirmation prompts for prod/qa
 - **Role-based Privileges** - Automatic privilege templates (app, ro, dba)
-- **Security** - Parameterized queries, no SQL injection
+- **Security-focused SQL handling** - identifier quoting and input validation for dynamic statements
 - **Clear Output** - Visual indicators for created vs existing resources
 
 ## Installation
@@ -82,35 +82,51 @@ vim config.json
 Preview what changes would be made without executing them:
 
 ```bash
-./bin/pg-create -c config.yaml --dry-run
+./bin/pg-create -c config.yaml -dry-run
 ```
+
+Note: Go's flag parser accepts both `-dry-run` and `--dry-run`.
 
 ## Configuration
 
 ### CLI Flags
 
-| Flag | Short | Description | Required |
-|------|-------|-------------|----------|
-| `--host` | `-s` | PostgreSQL host | Yes |
-| `--user` | `-u` | Admin user for connection | Yes |
-| `--password` | `-p` | Admin password | Yes |
-| `--database` | `-d` | Database name to create | Yes |
-| `--port` | | Port (default: 5432) | No |
-| `--schema` | `-sc` | Comma-separated schemas | No |
-| `--roles` | `-r` | Roles (format: name:pass:type) | No |
-| `--extensions` | `-e` | Comma-separated extensions | No |
-| `--search-path` | `-sp` | Search path for roles | No |
-| `--grants` | `-g` | Comma-separated grants | No |
-| `--env` | | Environment (standalone/qa/prod) | No |
-| `--config` | `-c` | Config file (YAML/JSON) | No |
-| `--dry-run` | | Preview mode | No |
-| `--help` | `-h` | Show help | No |
+| Flag | Description | Required |
+|------|-------------|----------|
+| `-s` | PostgreSQL host | Yes (unless `-c` is used) |
+| `-u` | Admin user for connection | Yes (unless `-c` is used) |
+| `-p` | Admin password (optional when `~/.pgpass` matches) | No |
+| `-d` | Database name to create | Yes (unless `-c` is used) |
+| `-port` | Port (default: 5432) | No |
+| `-sc` | Comma-separated schemas | No |
+| `-r` | Roles (`name:password:type`, type is `app|ro|dba`) | No |
+| `-e` | Comma-separated extensions | No |
+| `-sp` | Search path (comma-separated schemas) | No |
+| `-g` | Comma-separated grants | No |
+| `-env` | Environment (`standalone|qa|prod`) | No |
+| `-c` | Config file (YAML/JSON) | No |
+| `-dry-run` | Preview mode (no changes applied) | No |
+| `-h` | Show help | No |
 
 ### Role Types
 
 - **dba** - Database administrator (full privileges, 10 connections)
 - **app** - Application role (CRUD privileges, unlimited connections)
 - **ro** - Read-only role (SELECT only, 10 connections)
+
+### Input Validation
+
+Invalid role types and grants fail fast.
+
+```bash
+# Invalid role type example
+./bin/pg-create -s localhost -u postgres -d myapp -r app_user:secret:readonly
+# Output: Invalid configuration: invalid role type "readonly" for role "app_user" (must be app, ro, or dba)
+
+# Invalid grant example
+./bin/pg-create -s localhost -u postgres -d myapp -g select,truncate
+# Output: Invalid configuration: invalid grant type "truncate"
+```
 
 ### Grant Types
 
@@ -188,6 +204,62 @@ search_path: myapp, ext
 ./bin/pg-create -c config.yaml
 ```
 
+## Grant Validation
+
+Use the SQL validation toolkit in `sql/validation` to verify database, schema, table, sequence, function, and default privileges after provisioning.
+
+### 1) Seed validation objects (optional but recommended)
+
+```bash
+psql -h localhost -U postgres -d myapp_prod \
+  -v schema='myapp' \
+  -f sql/validation/seed_validation_objects.sql
+```
+
+### 2) Validate grants for one or more roles
+
+```bash
+psql -h localhost -U postgres -d myapp_prod \
+  -v roles='myapp_app,myapp_ro,myapp_dba' \
+  -v schema='myapp' \
+  -f sql/validation/validate_grants.sql
+```
+
+Notes:
+- `roles` defaults to `readonly` when omitted.
+- `schema` defaults to empty, which validates all non-system schemas.
+- If a schema has no objects yet, object-level result sets can be empty.
+
+## Validation CLI
+
+`pg-validate` is a second CLI in this repo for role/user grant inspection.
+
+### Build
+
+```bash
+make build-validate
+```
+
+### Usage
+
+```bash
+./bin/pg-validate \
+  -s localhost \
+  -u postgres \
+  -db myapp_prod \
+  -roles myapp_app,myapp_ro,myapp_dba \
+  -schema myapp
+```
+
+Key flags:
+- `-s`: host
+- `-port`: port (default `5432`)
+- `-u`: admin user for inspection queries
+- `-p`: admin password (optional when `~/.pgpass` matches)
+- `-db`: database to inspect
+- `-roles`: one role or comma-separated role list
+- `-schema`: optional schema filter
+
 ## Development
 
 ### Project Structure
@@ -197,11 +269,20 @@ pg-create/
 ├── cmd/
 │   └── pgcreate/
 │       └── main.go          # Entry point
+│   └── pgvalidate/
+│       └── main.go          # Validation CLI entry point
 ├── pkg/
 │   ├── config/
 │   │   └── config.go        # Configuration handling
 │   └── database/
 │       └── provisioner.go   # Database provisioning logic
+│   └── validator/
+│       └── validator.go      # Validation report logic
+├── sql/
+│   └── validation/
+│       ├── validate_grants.sql
+│       ├── seed_validation_objects.sql
+│       └── README.md
 ├── bin/                     # Build output
 ├── Makefile                 # Build automation
 ├── config.example.yaml      # Example YAML config
@@ -213,6 +294,8 @@ pg-create/
 
 ```bash
 make build      # Build binary
+make build-validate  # Build validator CLI
+make build-all   # Build both CLIs
 make clean      # Clean artifacts
 make deps       # Install dependencies
 make test       # Run tests
@@ -224,11 +307,25 @@ make help       # Show all targets
 
 - Never commit config files with real passwords
 - Use `.pgpass` file for credentials when possible
-- Always use `--dry-run` first in production
+- Always use `-dry-run` first in production
 - The CLI will prompt for confirmation in prod/qa environments
-- All SQL queries use parameterized statements
+- Dynamic SQL paths use identifier quoting and validated inputs; avoid untrusted config values
 
 ## Troubleshooting
+
+### Common Errors
+
+| Error message | Likely cause | Fix |
+|---|---|---|
+| `Missing required flags: -s (host), -u (user), -d (database)` | Required flags were not provided when not using `-c` | Provide `-s`, `-u`, and `-d`, or use `-c config.yaml` |
+| `No password provided: use -p flag or add a matching entry to ~/.pgpass` | No `-p` and no matching `~/.pgpass` entry | Add `-p`, or add `host:port:postgres:user:password` to `~/.pgpass` |
+| `Failed to load config file: ...` | Config file path invalid or unreadable | Verify path and file permissions |
+| `unsupported config file format: ...` | Config file extension is not `.yaml`, `.yml`, or `.json` | Rename or convert config file to supported format |
+| `Invalid configuration: invalid role type "..."` | Role type not one of `app`, `ro`, `dba` | Update role spec or config to one of supported role types |
+| `Invalid configuration: invalid grant type "..."` | Unsupported grant value | Use only `usage`, `select`, `insert`, `update`, `delete`, `execute` |
+| `failed to connect to database: ...` | Host/port/user/password/network issue | Validate connection info with `psql` and `pg_isready` |
+| `invalid search_path "...": must contain at least one schema` | `-sp`/`search_path` is empty or contains only commas/spaces | Set a valid schema list, for example `-sp "myapp,public"` |
+| `Operation cancelled by user` | Confirmation prompt was answered `no` in `qa`/`prod` | Re-run and confirm with `yes` |
 
 ### Connection Issues
 
@@ -259,139 +356,3 @@ MIT License - See LICENSE file for details
 ## Contributing
 
 Contributions welcome! Please open an issue or PR.
-
----
-
-**pg-create**
-
-Create PostgreSQL Users, Grants and Roles 
-
-## !!! WARNING !!!
-
-This is only used currently for testing. 
-Do not use in PROD or any environment that you care about. More testing and validation needs to happen before this is ready for PROD.
-
-## Usage
-
-```GO
-pg-create -h
-Usage of pg-create:
-  -d string
-        Database name
-  -g string
-        Comma-separated list of grants to create
-  -h    Print help
-  -p string
-        Password
-  -r string
-        Comma-separated list of roles to create
-  -s string
-        Host
-  -sc string
-        Schema name
-  -sp string
-        Search path
-  -u string
-        User
-```
-
-Dependencies:
-
-- [docker](https://www.docker.com/)
-- `docker run -d --name postq -d -p 5432:5432/tcp -e POSTGRES_PASSWORD=s3cr3t postgres:latest`
-- `brew install libpq`
-
-To create a password:
-
-- `pwgen -s -c -n 23 1`
-
-## Examples
-
-The user johny5_ro will be created with the password izEqeKcKMrk45YmeQsgwS1z and
-will have the following grants: usage,select on the data schema and will be a member of the data_ro role.
-
-I am running this multiple times to test the idempotency of the script in this example.
-
-```GO
-pg-create -s 10.8.0.10 -u johny5_ro -p izEqeKcKMrk45YmeQsgwS1z -g usage,select  -d data -sc data_schema -r data_ro
-✓ Connected to database
-[*] Role data_ro already exists
-[+] User johny5_ro added to role data_ro
-[*] User johny5_ro already exists
-[*] Schema data_schema already exists
-[+] Role data_ro granted USAGE privilege for schema data_schema
-[+] Role data_ro granted SELECT privilege for all tables in schema data_schema
-[*] Database data already exists
-[*] User johny5_ro already has database data
-```
-
-## Validations
-
-```bash
-pg-create on  main [!?] via 🐹 v1.20.6 
-❯ psql -U johny5_ro -h 10.8.0.10  data
-Password for user johny5_ro: 
-psql (15.3)
-Type "help" for help.
-
-data=>
-
-
-data=> \l
-                                                 List of databases
-   Name    |   Owner    | Encoding |  Collate   |   Ctype    | ICU Locale | Locale Provider |   Access privileges   
------------+------------+----------+------------+------------+------------+-----------------+-----------------------
- books     | klarsen_ro | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | 
- chaos     | klarsen_ro | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | 
- data      | johny5_ro  | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | 
- movies    | johny5_wr  | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | 
- postgres  | postgres   | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | 
- template0 | postgres   | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | =c/postgres          +
-           |            |          |            |            |            |                 | postgres=CTc/postgres
- template1 | postgres   | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | =c/postgres          +
-           |            |          |            |            |            |                 | postgres=CTc/postgres
- test      | klarsen_ro | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            | 
-(8 rows)
-
-data=> \du+
-                                           List of roles
- Role name  |                         Attributes                         | Member of | Description 
-------------+------------------------------------------------------------+-----------+-------------
- blarsen_ro |                                                            | {}        | 
- blarsen_wr |                                                            | {}        | 
- chaos_wr   |                                                            | {rw_user} | 
- data_ro    |                                                            | {}        | 
- johny5_ro  |                                                            | {data_ro} | 
- johny5_wr  |                                                            | {}        | 
- jojo_ro    |                                                            | {}        | 
- klarsen_ro |                                                            | {}        | 
- login      | Cannot login                                               | {}        | 
- movies_ro  |                                                            | {}        | 
- movies_wr  |                                                            | {}        | 
- postgres   | Superuser, Create role, Create DB, Replication, Bypass RLS | {}        | 
- rw_user    |                                                            | {}        | 
-
-
-data=> \x
-Expanded display is on.
-data=> SELECT * FROM pg_roles WHERE rolname = 'johny5_ro';
--[ RECORD 1 ]--+----------
-rolname        | johny5_ro
-rolsuper       | f
-rolinherit     | t
-rolcreaterole  | f
-rolcreatedb    | f
-rolcanlogin    | t
-rolreplication | f
-rolconnlimit   | -1
-rolpassword    | ********
-rolvaliduntil  | 
-rolbypassrls   | f
-rolconfig      | 
-oid            | 24593
-
-data=> \x
-Expanded display is off.
-data=> \q
-
-```

@@ -74,8 +74,12 @@ func main() {
 			fmt.Println(green("✓"), "Using credentials from ~/.pgpass")
 		}
 
-		cfg = config.FromFlags(*host, *port, *userName, passwd, *dbName,
+		cfg, err = config.FromFlags(*host, *port, *userName, passwd, *dbName,
 			*schemas, *roles, *extensions, *grants, *searchPath, *envType)
+		if err != nil {
+			fmt.Println(red("✗"), "Invalid configuration:", err)
+			os.Exit(1)
+		}
 	}
 
 	if *dryRun {

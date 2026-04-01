@@ -49,3 +49,6 @@ FROM information_schema.tables t
 WHERE t.table_schema = 'store'
 ORDER BY t.table_name;
 
+
+SELECT * FROM pg_roles WHERE rolname = 'readonly';
+SELECT * FROM information_schema.role_table_grants WHERE grantee='readonly';
