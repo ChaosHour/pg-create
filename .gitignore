@@ -37,3 +37,8 @@ Thumbs.db
 # Credentials
 .pgpass
 .env
+
+# agent instructions
+agent.md
+Gemini.md
+REFACTORING_SUMMARY.md
