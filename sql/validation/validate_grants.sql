@@ -134,7 +134,7 @@ WITH target_schemas AS (
 ), target_functions AS (
     SELECT n.nspname,
            p.proname,
-           pg_get_function_identity_arguments(p.oid) AS identity_args
+           p.oid AS function_oid
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN target_schemas s ON s.nspname = n.nspname
@@ -142,11 +142,10 @@ WITH target_schemas AS (
 SELECT tr.rolname,
        tf.nspname AS function_schema,
        tf.proname AS function_name,
-       tf.identity_args,
-       has_function_privilege(tr.rolname, format('%I.%I(%s)', tf.nspname, tf.proname, tf.identity_args), 'EXECUTE') AS can_execute
+       has_function_privilege(tr.rolname, tf.function_oid::regprocedure, 'EXECUTE') AS can_execute
 FROM _target_roles tr
 CROSS JOIN target_functions tf
-ORDER BY tr.rolname, tf.nspname, tf.proname, tf.identity_args;
+ORDER BY tr.rolname, tf.nspname, tf.proname;
 
 \echo
 \echo ===== 7) Default privileges for target roles =====

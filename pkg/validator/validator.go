@@ -426,8 +426,7 @@ WITH target_schemas AS (
       AND ($2 = '' OR n.nspname = $2)
 ), target_functions AS (
     SELECT n.nspname AS schema_name,
-           p.proname,
-           pg_get_function_identity_arguments(p.oid) AS identity_args
+           p.oid AS function_oid
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN target_schemas s ON s.nspname = n.nspname
@@ -435,7 +434,7 @@ WITH target_schemas AS (
 SELECT input.role_name,
        tf.schema_name,
        count(*)::int AS function_count,
-       count(*) FILTER (WHERE has_function_privilege(input.role_name, format('%I.%I(%s)', tf.schema_name, tf.proname, tf.identity_args), 'EXECUTE'))::int AS can_execute
+       count(*) FILTER (WHERE has_function_privilege(input.role_name, tf.function_oid::regprocedure, 'EXECUTE'))::int AS can_execute
 FROM unnest($1::text[]) AS input(role_name)
 JOIN target_functions tf ON true
 GROUP BY input.role_name, tf.schema_name

@@ -42,3 +42,7 @@ Thumbs.db
 agent.md
 Gemini.md
 REFACTORING_SUMMARY.md
+
+# files in the bin directory
+bin/pg-create
+bin/pg-validate
