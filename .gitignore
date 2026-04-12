@@ -46,3 +46,6 @@ REFACTORING_SUMMARY.md
 # files in the bin directory
 bin/pg-create
 bin/pg-validate
+
+# sql files
+ecommerce.sql
