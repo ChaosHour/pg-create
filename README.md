@@ -12,6 +12,15 @@ PostgreSQL Resource Provisioning CLI - A safe, idempotent tool for creating and 
 - **Security-focused SQL handling** - identifier quoting and input validation for dynamic statements
 - **Clear Output** - Visual indicators for created vs existing resources
 
+## Included CLIs
+
+This repository contains several Go command-line tools:
+
+- `pg-create` – Primary provisioning CLI for creating and managing PostgreSQL databases, roles, schemas, extensions, and grants.
+- `pg-validate` – Validation CLI for inspecting role and grant configuration across one or more databases.
+- `pgstress` – Connection stress test CLI for opening many concurrent PostgreSQL sessions and measuring instance behavior.
+- `pg-watch` – Monitoring CLI for querying `pg_stat_activity` repeatedly, optionally refreshing every second.
+
 ## Installation
 
 ### Build from Source
